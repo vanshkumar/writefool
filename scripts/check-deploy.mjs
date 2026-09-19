@@ -1,0 +1,10 @@
+import { readFile } from 'node:fs/promises';
+const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+const production = config.env?.production;
+const missing = ['APP_URL', 'OWNER_EMAIL', 'EMAIL_FROM'].filter(key => !production?.vars?.[key]);
+if (!production?.d1_databases?.[0]?.database_id) missing.push('production D1 database_id');
+if (missing.length) throw new Error(`Configure ${missing.join(', ')} in wrangler.jsonc before deploying. See README.md.`);
+const url = new URL(production.vars.APP_URL);
+if (url.protocol !== 'https:' || url.pathname !== '/' || url.search || url.hash || url.username || url.password) throw new Error('Production APP_URL must be an HTTPS origin.');
+if (production.vars.ENVIRONMENT !== 'production') throw new Error('Production must not enable development authentication.');
+console.log('Production configuration validated. Runtime secrets must already be set on the production Worker.');

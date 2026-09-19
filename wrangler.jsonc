@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "writefool-development",
+  "account_id": "6021af9682307f8c346ed3af3434d42b",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*", "/unsubscribe"] },
+  "d1_databases": [{ "binding": "DB", "database_name": "writefool-development", "migrations_dir": "migrations" }],
+  "vars": { "ENVIRONMENT": "development", "APP_URL": "http://localhost:5183", "OWNER_EMAIL": "", "EMAIL_FROM": "" },
+  "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "enabled": true, "invocation_logs": false }, "traces": { "enabled": false } },
+  "env": {
+    "production": {
+      "name": "writefool",
+      "workers_dev": true,
+      "preview_urls": false,
+      "d1_databases": [{ "binding": "DB", "database_name": "writefool-production", "database_id": "45e42d5f-e745-46d0-bf9c-047f57cc1336", "migrations_dir": "migrations" }],
+      "triggers": { "crons": ["*/5 * * * *"] },
+      "vars": { "ENVIRONMENT": "production", "APP_URL": "https://writefool.vanshkumar95.workers.dev", "OWNER_EMAIL": "vanshkumar95@gmail.com", "EMAIL_FROM": "Writefool <highlights@writefool.vanshkumar.net>" }
+    }
+  }
+}

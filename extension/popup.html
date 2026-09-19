@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Writefool · Kindle</title><link rel="stylesheet" href="popup.css"></head>
+  <body>
+    <header><span class="mark">w.</span><p>YOUR BOOKS, RETURNING</p><h1>A little rereading.</h1><p class="intro">Bring your Kindle highlights home to Writefool.</p></header>
+    <section id="connection">
+      <form id="pair-form">
+        <label for="app-url">Writefool address</label><input id="app-url" type="url" readonly required>
+        <label for="pair-code">Pairing code</label><input id="pair-code" type="text" placeholder="Code from Connect Kindle" minlength="6" maxlength="32" required autocomplete="off" spellcheck="false">
+        <button id="pair-button" type="submit">Connect my Kindle <span>↗</span></button>
+      </form>
+      <div id="paired" hidden><p class="connected">● Connected to Writefool</p><button id="sync-button" type="button">Sync highlights <span>↻</span></button><button id="reconnect-button" class="secondary" type="button">Use a new pairing code</button></div>
+      <div id="account-setup" hidden>
+        <p class="intro">Sign in to the Amazon account whose Kindle highlights belong in this library. Then check its books below.</p>
+        <button id="check-account" type="button">Check my Kindle account</button>
+        <div id="account-preview" hidden>
+          <p class="intro">Books in the current Kindle notebook:</p><ul id="account-books"></ul>
+          <p class="intro">Confirm only if this is your intended account. This locks your entire Writefool library, including future connections, to this Amazon account.</p>
+          <button id="confirm-account" type="button">Yes, lock to this account</button>
+        </div>
+      </div>
+    </section>
+    <p id="status" role="status" aria-live="polite">Loading your connection…</p>
+    <footer><a id="app-link" target="_blank" rel="noreferrer">Open Writefool ↗</a><a href="https://read.amazon.com/notebook" target="_blank" rel="noreferrer">Open Kindle ↗</a><p>Amazon account and sign-in checks stay in your browser. Amazon cookies are never sent to Writefool. Imports pause when another account is signed in.</p><p id="extension-version"></p></footer>
+    <script src="popup.js"></script>
+  </body>
+</html>

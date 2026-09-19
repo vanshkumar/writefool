@@ -1,0 +1,8 @@
+# Copy to .dev.vars. The local app works without external accounts via local development sign-in.
+AUTH_SECRET=replace-with-a-random-secret-at-least-32-characters-long
+RESEND_API_KEY=
+RESEND_WEBHOOK_SECRET=
+# Override configured deployment values only when needed:
+# OWNER_EMAIL=you@example.com
+# EMAIL_FROM=Writefool <highlights@your-verified-domain.com>
+# APP_URL=http://localhost:5183

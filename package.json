@@ -1,0 +1,43 @@
+{
+  "name": "writefool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host localhost",
+    "build": "vite build",
+    "build:production": "CLOUDFLARE_ENV=production vite build",
+    "build:extension": "node scripts/build-extension.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate": "wrangler d1 migrations apply writefool-development --config wrangler.jsonc --local",
+    "db:migrate:production": "wrangler d1 migrations apply writefool-production --config wrangler.jsonc --env production --remote",
+    "types": "wrangler types --strict-vars=false",
+    "deploy": "node scripts/check-deploy.mjs && pnpm run build:production && wrangler deploy --config dist/worker/wrangler.json",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm build:extension"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "^0.5.1",
+    "better-auth": "^1.7.3",
+    "hono": "^4.13.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "svix": "^2.3.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.4",
+    "@types/chrome": "^0.2.9",
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.0.1",
+    "miniflare": "5.20260903.0-alpha",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.129.0"
+  }
+}
