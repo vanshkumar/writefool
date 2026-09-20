@@ -181,4 +181,42 @@ describe('atomic imports against D1', () => {
     expect(await count('highlights')).toBe(200);
     expect(await count('highlight_sources')).toBe(200);
   });
+  it('keeps mixed import counter reads bounded in an 805-highlight library', async () => {
+    const initial = batch('seed');
+    initial.books[0].highlights = Array.from({ length: 50 }, (_, index) => ({
+      sourceId: `annotation-${index}`, text: `Passage ${index}.`, location: String(index),
+      note: null, highlightedAt: '2026-09-01T00:00:00.000Z',
+    }));
+    await importBatch(env, 'u', initial);
+    const bookId = await env.DB.prepare("SELECT id FROM books WHERE user_id='u'").first<string>('id');
+    await env.DB.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<755)
+      INSERT INTO highlights(id,user_id,book_id,text,imported_at,fingerprint)
+      SELECT 'unrelated-'||i,'u',?,'Unrelated passage '||i,'2026-09-01','unrelated-'||i FROM n`).bind(bookId).run();
+    expect(await count('highlights')).toBe(805);
+
+    const mixed = batch('mixed');
+    mixed.books[0].highlights = Array.from({ length: 50 }, (_, index) => ({
+      sourceId: `annotation-${index < 25 ? index : index + 25}`,
+      text: `Passage ${index < 25 ? index : index + 25}.`,
+      location: String(index < 25 ? index : index + 25),
+      note: index === 0 ? 'Changed note' : null,
+      // Omitting the date must preserve the existing highlighted_at and count as unchanged.
+    }));
+    let transactionReads = 0;
+    const measured = { DB: new Proxy(env.DB, { get(target, property) {
+      if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+        const results = await target.batch(statements);
+        transactionReads += results.reduce((sum, result) => sum + result.meta.rows_read, 0);
+        return results;
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } }) };
+    const result = await importBatch(measured, 'u', mixed);
+    expect(result).toMatchObject({ imported: 25, updated: 1, skipped: 24 });
+    expect(await count('highlights')).toBe(830);
+    expect(await importBatch(measured, 'u', mixed)).toEqual(result);
+    // Include all transaction statements, not just the counters; the old join order reads >80k.
+    expect(transactionReads).toBeLessThan(2000);
+  });
 });

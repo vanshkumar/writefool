@@ -2,6 +2,11 @@
 
 ## What Has Worked
 
+**[2026-09-20] — Bounded D1 import counter joins**
+- Observation: Keeping json_each outermost with CROSS JOIN in the updated/skipped counters reduced transaction reads for a mixed 50-highlight batch in an 805-highlight fixture from 82,338 to below 2,000. The regression verifies 25 imports, one update, 24 unchanged highlights, omitted-date handling, and immutable replay; all 133 tests, typecheck, and both builds pass.
+- Action: Preserve these explicit join orders and the D1 row-read budget regression. Keep counters within the import transaction so concurrent batches count committed rows correctly; no schema migration is needed for this fix.
+- Confidence: high
+
 **[2026-09-19] — Protected production sync and live account-switch check**
 - Observation: The owner explicitly confirmed the notebook preview (Anna Karenina, Blindsight, Chapterhouse: Dune). Connector 0.2.0 completed protected run ba4764f5-5a10-4abe-8eec-115f9b22a748 with 3 newly imported, 0 updated, and 802 unchanged highlights across 36 batches. After the owner switched to the other Amazon account, a manual sync reported account_mismatch; production remained at 34 books, 805 highlights, and 168 total batch receipts.
 - Action: Treat live wrong-account blocking and initial protected import as verified. Keep the immutable library lock through re-pairing/reload and preserve the current email preferences. After the user switched back, the protected sync completed successfully with all 805 highlights unchanged; the popup re-enabled its controls. Both live switch directions are verified.
@@ -101,6 +106,11 @@
 - Confidence: high
 
 ## What Has Failed
+
+**[2026-09-20] — Production D1 import read amplification**
+- Observation: Production D1 insights over the preceding 24 hours attributed 5,990,046 rows read across 146 executions (41,027 average) to the import_batches counter UPDATE in worker/import.ts. A read-only production EXPLAIN of its unchanged-highlight subquery showed highlights searched by user_id first, then json_each scanned for each highlight. Dashboard polling was an initial code-based suspicion, but production metrics identified import bookkeeping as the dominant cost; cron event reconciliation accounted for only 26,553 reads in that window.
+- Action: Optimize the JSON batch counter joins to drive indexed highlight-ID lookups from incoming rows, preserving the existing atomic batch/replay boundary. Verify the query plan and row-read cost on a realistic 805-highlight fixture before deployment. The reported insights window is rolling 24 hours, not the UTC billing day.
+- Confidence: high
 
 **[2026-09-08] — Account-specific Resend DNS records**
 - Observation: The user's Resend screenshot requests one DKIM TXT record and two sending CNAME records (rsend.writefool and send.writefool), not the TXT/MX sending setup in the generic Resend Namecheap guide. A subsequent screenshot confirms writefool.vanshkumar.net is verified. Public DNS resolves the CNAMEs to rsend.forge.rmta.net and send.forge.rmta.net.
