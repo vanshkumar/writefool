@@ -79,6 +79,13 @@ describe('Kindle notebook loading', () => {
     expect(new URL(String(fetchPage.mock.calls[0][0])).searchParams.get('asin')).toBe('B000000001');
   });
 
+  it('reads a zero-highlight book’s empty pane without reporting an unrecognized HTML response', async () => {
+    const emptyAnnotations = readFileSync('tests/fixtures/kindle-annotations-empty.html', 'utf8');
+    const fetchPage = vi.fn<typeof fetch>().mockResolvedValue(response(emptyAnnotations));
+    const result = await readNotebookPage(html(''), url, { kind: 'annotations', asin: 'B000000001', token: '' }, fetchPage);
+    expect(result).toEqual({ highlights: [], nextToken: null, contentLimitState: 'synthetic-limit-state', warnings: [] });
+  });
+
   it('detects sign-in responses from pagination without treating them as an empty library', async () => {
     const fetchPage = vi.fn<typeof fetch>().mockResolvedValue(response('<form name="signIn"></form>', 'https://www.amazon.com/ap/signin'));
     await expect(readNotebookPage(html(''), url, { kind: 'library', token: 'next' }, fetchPage)).rejects.toMatchObject({ kind: 'login_required' });

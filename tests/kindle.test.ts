@@ -7,6 +7,7 @@ const html = (value: string) => new DOMParser().parseFromString(value, 'text/htm
 const library = readFileSync('tests/fixtures/kindle-library.html', 'utf8');
 const annotations = readFileSync('tests/fixtures/kindle-annotations.html', 'utf8');
 const libraryEnd = readFileSync('tests/fixtures/kindle-library-end.html', 'utf8');
+const emptyAnnotations = readFileSync('tests/fixtures/kindle-annotations-empty.html', 'utf8');
 
 describe('Kindle notebook parser (synthetic fixtures)', () => {
   it('enumerates books with source ASINs and the next library cursor', () => {
@@ -93,6 +94,23 @@ describe('Kindle notebook parser (synthetic fixtures)', () => {
     expect(() => parseLibrary(html('<div id="kp-notebook-library"><div class="new-layout">A book</div></div>'))).toThrow('layout');
     expect(() => parseAnnotations(html('<div id="kp-notebook-annotations"><div class="new-layout">A passage</div></div>'), 'B000000001')).toThrow('layout');
     expect(parseAnnotations(html('<div id="kp-notebook-empty">No highlights</div>'), 'B000000001').highlights).toEqual([]);
+  });
+  it('recognizes Kindle’s empty annotations pane with its terminal pagination controls', () => {
+    expect(parseAnnotations(html(emptyAnnotations), 'B000000001')).toEqual({
+      highlights: [], nextToken: null, contentLimitState: 'synthetic-limit-state', warnings: [],
+    });
+  });
+  it('does not let an empty annotations template hide changed markup or a missing cursor', () => {
+    for (const markup of [
+      emptyAnnotations.replace('class="kp-notebook-annotations-next-page-start"', ''),
+      emptyAnnotations + '<div class="new-layout">An unrecognized passage</div>',
+      emptyAnnotations + '<div id="kp-notebook-annotations"><img src="unknown-passage.png"></div>',
+      emptyAnnotations + '<script>loadAnnotations()</script>',
+      '<input class="kp-notebook-annotations-next-page-start">',
+      '',
+    ]) expect(() => parseAnnotations(html(markup), 'B000000001')).toThrow('layout');
+    expect(() => parseAnnotations(html(emptyAnnotations + '<form name="signIn"></form>'), 'B000000001')).toThrow('Sign in');
+    expect(parseAnnotations(html(emptyAnnotations + annotations), 'B000000001').highlights).toHaveLength(2);
   });
   it('warns for export limits and treats blank pagination tokens as complete', () => {
     const result = parseAnnotations(html(annotations.replace('value="annotations-page-2"', 'value=""') + '<p>You reached the export limit.</p>'), 'B000000001');

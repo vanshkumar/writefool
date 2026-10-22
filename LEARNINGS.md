@@ -2,6 +2,21 @@
 
 ## What Has Worked
 
+**[2026-10-21] — Daily connector attempt limit**
+- Observation: Connector 0.2.1 scheduled imports after Amazon authentication-cookie changes, and its startup and one-minute continuation paths could bypass the daily alarm. Version 0.2.2 persists lastAttemptAt before network access, gates daily/startup attempts for 24 hours (including errors and interrupted runs), retires cookie/resume alarms, and keeps manual sync available. All 77 connector tests and typecheck pass; the production-origin extension build is ready, but Chrome access was not approved, so live activation still requires Reload in chrome://extensions.
+- Action: Keep automatic cadence tied to persisted attempts rather than successful imports alone. Cookie events must still invalidate account verification without starting sync. Preserve pending batches and cursors for daily or manual continuation, and honor the previous lastSuccessAt when upgrading. Do not claim this build is active until Chrome shows 0.2.2.
+- Confidence: high
+
+**[2026-10-20] — Empty Kindle annotation responses**
+- Observation: Connector 0.2.0 stopped at book 45 of 45 because a listed zero-highlight book returned `#empty-annotations-pane.aok-hidden`, an annotation cursor input without a value, and a content-limit-state input. The diagnostics counted library cursors only, so they reported `cursor=missing` despite the annotation marker. A synthetic fixture reproduced the failure. Connector 0.2.1 passed all 71 extension-related tests and typecheck, was built for production and reloaded in Chrome, and resumed the saved run to the live “Your Kindle highlights are up to date” state.
+- Action: Accept this explicit empty annotation pane only with its readable annotation cursor and no unexpected content outside the pane and pagination controls. Keep unknown layouts and sign-in responses strict; preserve the existing account lock and saved cursor when reloading this fix. Do not interpret library-cursor diagnostics as evidence that annotation pagination markers are absent.
+- Confidence: high
+
+**[2026-09-20] — Import read fix production deployment**
+- Observation: Commit 8991136 deployed successfully as Worker version fd5b568a-67b1-48ad-93e3-f98399773cec with the existing production D1 binding and five-minute cron. Live checks returned 200 for the app and production config (configured=true, development=false), and 401 for the anonymous dashboard. No database migration or connector rebuild was required.
+- Action: Treat the server-side fix as released; measure subsequent sync traffic separately before claiming a production read-reduction percentage. Existing daily usage is not cleared by deployment.
+- Confidence: high
+
 **[2026-09-20] — Bounded D1 import counter joins**
 - Observation: Keeping json_each outermost with CROSS JOIN in the updated/skipped counters reduced transaction reads for a mixed 50-highlight batch in an 805-highlight fixture from 82,338 to below 2,000. The regression verifies 25 imports, one update, 24 unchanged highlights, omitted-date handling, and immutable replay; all 133 tests, typecheck, and both builds pass.
 - Action: Preserve these explicit join orders and the D1 row-read budget regression. Keep counters within the import transaction so concurrent batches count committed rows correctly; no schema migration is needed for this fix.

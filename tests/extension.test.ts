@@ -9,6 +9,7 @@ function harness(saved: Record<string, any>) {
   let data: Record<string, any> = structuredClone({ schemaVersion:2, runAccountFingerprint:fingerprint, ...saved });
   const session: Record<string, any> = {};
   const listeners: Record<string, Listener> = {};
+  const alarms = new Map<string, chrome.alarms.Alarm>();
   const event = (name: string) => ({ addListener: (listener: Listener) => { listeners[name] = listener; } });
   const chrome = {
     storage: {
@@ -16,8 +17,12 @@ function harness(saved: Record<string, any>) {
       session: { get: vi.fn(async () => session), set: vi.fn(async (value) => Object.assign(session, value)), remove: vi.fn(async (name: string) => { delete session[name]; }) },
     },
     cookies: { getAll: vi.fn(async () => ['at-main','session-id'].map(name => ({name,value:'test-cookie',domain:'.amazon.com',path:'/',storeId:'0',hostOnly:false}))), onChanged: event('cookie') },
-    runtime: { id: 'test-extension', getManifest: () => ({ version: '0.2.0' }), getURL: (path: string) => `chrome-extension://test-extension/${path}`, onMessage: event('message'), onStartup: event('startup'), onInstalled: event('installed') },
-    alarms: { get: vi.fn(async () => undefined), create: vi.fn(async () => {}), clear: vi.fn(async () => {}), onAlarm: event('alarm') },
+    runtime: { id: 'test-extension', getManifest: () => ({ version: '0.2.2' }), getURL: (path: string) => `chrome-extension://test-extension/${path}`, onMessage: event('message'), onStartup: event('startup'), onInstalled: event('installed') },
+    alarms: {
+      get: vi.fn(async (name: string) => alarms.get(name)),
+      create: vi.fn(async (name: string, info: chrome.alarms.AlarmCreateInfo) => { alarms.set(name, { name, scheduledTime: info.when ?? Date.now() + (info.delayInMinutes ?? info.periodInMinutes ?? 0) * 60000, periodInMinutes: info.periodInMinutes, persistAcrossSessions: true }); }),
+      clear: vi.fn(async (name: string) => alarms.delete(name)), onAlarm: event('alarm'),
+    },
     tabs: { create: vi.fn(async () => ({ id: 5 })), get: vi.fn(async () => ({ id: 5, status: 'complete', url: 'https://read.amazon.com/notebook' })), remove: vi.fn(async () => {}), sendMessage: vi.fn() },
   };
   vi.stubGlobal('chrome', chrome);
@@ -25,7 +30,7 @@ function harness(saved: Record<string, any>) {
   return { chrome, listeners, read: () => data };
 }
 
-afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
 
 const completeCursor = { phase: 'complete', books: [], bookIndex: 0, token: '', contentLimitState: '', seenTokens: [] };
 const pending = { batch: { source: 'kindle', accountFingerprint:fingerprint, runId: 'resumable-run', batchId: 'fixed-batch-id', books: [], complete: true }, next: completeCursor };
@@ -70,7 +75,7 @@ describe('extension continuation and trust boundary', () => {
     expect(app.read().pending).toBeUndefined();
     expect(app.chrome.tabs.create).not.toHaveBeenCalled();
     expect(app.chrome.storage.local.setAccessLevel).toHaveBeenCalledWith({ accessLevel: 'TRUSTED_CONTEXTS' });
-    expect(app.chrome.alarms.create).toHaveBeenCalledWith('writefool-daily', { periodInMinutes: 1440 });
+    expect(app.chrome.alarms.create).toHaveBeenCalledWith('writefool-daily', { when: Date.parse(app.read().lastAttemptAt) + 86400000, periodInMinutes: 1440 });
   });
   it('resumes from an empty final library page and imports highlights for all previously discovered books', async () => {
     const books = Array.from({ length: 34 }, (_, index) => ({ sourceId: `B${String(index + 1).padStart(9, '0')}`, title: `Synthetic book ${index + 1}`, author: 'Writer', highlights: [] }));
@@ -106,6 +111,29 @@ describe('extension continuation and trust boundary', () => {
     expect(batches).toHaveLength(7);
     expect(batches.every((batch) => !batch.books.length || batch.books[0].highlights.length <= 100)).toBe(true);
     expect(new Set(batches.flatMap((batch) => batch.books.flatMap((book: any) => book.highlights.map((highlight: any) => highlight.sourceId)))).size).toBe(501);
+  });
+  it('resumes at an empty final book and completes the existing run without replaying earlier books', async () => {
+    const books = Array.from({ length: 45 }, (_, index) => ({ sourceId: `B${String(index + 1).padStart(9, '0')}`, title: `Synthetic book ${index + 1}`, author: 'Writer', highlights: [] }));
+    const cursor = { ...completeCursor, phase: 'annotations', books, bookIndex: 44 };
+    const app = harness({ token: 'import-only-secret', runId: 'resumable-run', status: 'error', cursor });
+    app.chrome.tabs.sendMessage.mockImplementation(async (_id, request) => ({
+      requestId: request.requestId, ok: true, data: { highlights: [], nextToken: null, contentLimitState: 'synthetic-limit-state', warnings: [] },
+    }));
+    const batches: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      if (url.endsWith('/api/extension/import')) batches.push(JSON.parse(init.body as string));
+      return responseFor(url);
+    }));
+    await import('../extension/background');
+    await popup(app, 'sync');
+    await vi.waitFor(() => expect(app.read().status).toBe('success'));
+    expect(app.chrome.tabs.sendMessage).toHaveBeenCalledOnce();
+    expect(app.chrome.tabs.sendMessage.mock.calls[0][1]).toMatchObject({ kind: 'annotations', asin: books[44].sourceId, token: '' });
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toMatchObject({ runId: 'resumable-run', accountFingerprint: fingerprint, books: [books[44]] });
+    expect(batches[1]).toMatchObject({ runId: 'resumable-run', books: [], complete: true });
+    expect(app.read()).toMatchObject({ progress: 100, busy: false });
+    expect(app.read().cursor).toBeUndefined();
   });
   it('keeps the exact payload after an uncertain upload and replays its idempotency key on retry', async () => {
     const app = harness({ token: 'import-only-secret', runId: 'resumable-run', status: 'syncing', cursor: { ...completeCursor, phase: 'annotations' }, pending });
@@ -150,7 +178,7 @@ describe('extension continuation and trust boundary', () => {
     }));
     await import('../extension/background');
     app.listeners.startup();
-    await vi.waitFor(() => expect(app.read().message).toContain('[Extension 0.2.0; library page 2, 1 books found]'));
+    await vi.waitFor(() => expect(app.read().message).toContain('[Extension 0.2.2; library page 2, 1 books found]'));
     await vi.waitFor(() => expect(messages.at(-1)).toContain('next library page was not recognized'));
     expect(app.read().cursor).toEqual(cursor);
     expect(messages.join(' ')).not.toMatch(/Private|private|import-only-secret/);
@@ -160,6 +188,127 @@ describe('extension continuation and trust boundary', () => {
 function popup(app: ReturnType<typeof harness>, action: string, extra: Record<string, unknown> = {}) {
   return new Promise<any>(resolve => app.listeners.message({channel:'writefool:popup',requestId:crypto.randomUUID(),action,...extra}, {id:'test-extension',url:'chrome-extension://test-extension/popup.html'},resolve));
 }
+
+describe('daily automatic sync limit', () => {
+  const day = 86400000;
+  const start = Date.parse('2026-10-21T12:00:00Z');
+
+  function scheduledApp(saved: Record<string, unknown> = {}) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(start);
+    const app = harness({ token: 'import-only-secret', ...saved });
+    app.chrome.tabs.sendMessage.mockImplementation(async (_id, request) => ({ requestId: request.requestId, ok: true, data: { books: [], nextToken: null } }));
+    const fetcher = vi.fn(async (url: string) => responseFor(url));
+    vi.stubGlobal('fetch', fetcher);
+    return { ...app, fetcher };
+  }
+
+  it('honors a pre-upgrade success and clears old retry alarms without reopening Amazon', async () => {
+    const lastSuccessAt = new Date(start - 60 * 60000).toISOString();
+    const app = scheduledApp({ lastSuccessAt, status: 'success' });
+    await app.chrome.alarms.create('writefool-resume', { periodInMinutes: 1 });
+    await app.chrome.alarms.create('writefool-account-check', { delayInMinutes: 1 });
+    await app.chrome.alarms.create('writefool-daily', { when: start, periodInMinutes: 1440 });
+    await import('../extension/background');
+    await app.listeners.startup();
+    await app.listeners.alarm({ name: 'writefool-daily' });
+    expect(app.fetcher).not.toHaveBeenCalled();
+    expect(app.chrome.tabs.create).not.toHaveBeenCalled();
+    expect(await app.chrome.alarms.get('writefool-resume')).toBeUndefined();
+    expect(await app.chrome.alarms.get('writefool-account-check')).toBeUndefined();
+    expect(await app.chrome.alarms.get('writefool-daily')).toMatchObject({ scheduledTime: Date.parse(lastSuccessAt) + day });
+    expect(app.read()).toMatchObject({ lastSuccessAt, status: 'success' });
+  });
+
+  it('ignores cookie changes and stale account/resume events even when a daily sync is due', async () => {
+    const app = scheduledApp();
+    await import('../extension/background');
+    app.listeners.cookie({ cookie: { name: 'at-main', domain: '.amazon.com' } });
+    await app.listeners.alarm({ name: 'writefool-account-check' });
+    await app.listeners.alarm({ name: 'writefool-resume' });
+    expect(app.chrome.storage.session.remove).toHaveBeenCalledWith('accountCandidate');
+    expect(await app.chrome.alarms.get('writefool-account-check')).toBeUndefined();
+    expect(app.fetcher).not.toHaveBeenCalled();
+    expect(app.chrome.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it('allows at most one automatic attempt per 24 hours across concurrent events and worker restarts', async () => {
+    const app = scheduledApp();
+    await import('../extension/background');
+    await Promise.all([app.listeners.startup(), app.listeners.alarm({ name: 'writefool-daily' })]);
+    expect(app.read()).toMatchObject({ status: 'success', lastAttemptAt: new Date(start).toISOString() });
+    expect(app.chrome.tabs.create).toHaveBeenCalledOnce();
+
+    vi.setSystemTime(start + day - 1);
+    vi.resetModules();
+    await import('../extension/background');
+    await app.listeners.startup();
+    await app.listeners.alarm({ name: 'writefool-daily' });
+    expect(app.chrome.tabs.create).toHaveBeenCalledOnce();
+
+    vi.setSystemTime(start + day);
+    await app.listeners.alarm({ name: 'writefool-daily' });
+    expect(app.chrome.tabs.create).toHaveBeenCalledTimes(2);
+    expect(app.read().status).toBe('success');
+  });
+
+  it('persists failed attempts before opening Amazon and waits a day before resuming the same cursor', async () => {
+    const app = scheduledApp();
+    app.chrome.tabs.sendMessage.mockImplementationOnce(async () => {
+      expect(app.read().lastAttemptAt).toBe(new Date(start).toISOString());
+      throw new Error('Amazon is unavailable');
+    });
+    await import('../extension/background');
+    await app.listeners.startup();
+    expect(app.read().status).toBe('login_required');
+    const runId = app.read().runId;
+    const cursor = structuredClone(app.read().cursor);
+    const calls = app.fetcher.mock.calls.length;
+    vi.setSystemTime(start + 60000);
+    vi.resetModules();
+    await import('../extension/background');
+    await app.listeners.startup();
+    await app.listeners.alarm({ name: 'writefool-daily' });
+    expect(app.fetcher).toHaveBeenCalledTimes(calls);
+    expect(app.chrome.tabs.create).toHaveBeenCalledOnce();
+    expect(app.read()).toMatchObject({ runId, cursor });
+    vi.setSystemTime(start + day);
+    await app.listeners.alarm({ name: 'writefool-daily' });
+    expect(app.chrome.tabs.create).toHaveBeenCalledTimes(2);
+    expect(app.read().status).toBe('success');
+  });
+
+  it('keeps an interrupted upload intact until the daily limit expires', async () => {
+    const app = scheduledApp({ lastAttemptAt: new Date(start).toISOString(), runId: 'resumable-run', status: 'syncing', cursor: { ...completeCursor, phase: 'annotations' }, pending });
+    await import('../extension/background');
+    await app.listeners.startup();
+    await app.listeners.alarm({ name: 'writefool-resume' });
+    expect(app.fetcher).not.toHaveBeenCalled();
+    expect(app.read().pending).toEqual(pending);
+    vi.setSystemTime(start + day);
+    await app.listeners.alarm({ name: 'writefool-daily' });
+    expect(app.read().status).toBe('success');
+    expect(app.read().pending).toBeUndefined();
+    expect(app.chrome.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it('allows manual sync during the cooldown and schedules the next automatic attempt from it', async () => {
+    const app = scheduledApp({ lastAttemptAt: new Date(start - 3600000).toISOString(), status: 'success' });
+    await import('../extension/background');
+    await popup(app, 'sync');
+    await vi.waitFor(() => {
+      expect(app.read()).toMatchObject({ busy: false, status: 'success' });
+      expect(Date.parse(app.read().lastAttemptAt)).toBeGreaterThanOrEqual(start);
+    });
+    expect(app.chrome.tabs.create).toHaveBeenCalledOnce();
+    expect(await app.chrome.alarms.get('writefool-daily')).toMatchObject({ scheduledTime: Date.parse(app.read().lastAttemptAt) + day });
+    vi.setSystemTime(start + day - 3600000);
+    await app.listeners.startup();
+    await app.listeners.alarm({ name: 'writefool-daily' });
+    expect(app.chrome.tabs.create).toHaveBeenCalledOnce();
+  });
+});
+
 describe('account-switch regression protection', () => {
   it('blocks queued uploads on another account and resumes the exact batch after switching back', async () => {
     const app = harness({token:'secret',runId:'resumable-run',cursor:{...completeCursor,phase:'annotations'},pending});

@@ -6,8 +6,9 @@ const APP_URL = WRITEFOOL_APP_URL;
 const DAILY_ALARM = 'writefool-daily';
 const RESUME_ALARM = 'writefool-resume';
 const ACCOUNT_ALARM = 'writefool-account-check';
+const SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 interface Cursor { phase: 'library' | 'annotations' | 'complete'; books: NormalizedBook[]; bookIndex: number; token: string; contentLimitState: string; seenTokens: string[] }
-interface State { busy?: boolean; schemaVersion?: number; accountFingerprint?: string; runAccountFingerprint?: string; token?: string; tabId?: number; runId?: string; cursor?: Cursor; pending?: { batch: ImportBatch; next: Cursor; remaining?: ImportBatch[] }; status?: SyncState; message?: string; progress?: number; lastSuccessAt?: string; warnings?: string[] }
+interface State { busy?: boolean; schemaVersion?: number; accountFingerprint?: string; runAccountFingerprint?: string; token?: string; tabId?: number; runId?: string; cursor?: Cursor; pending?: { batch: ImportBatch; next: Cursor; remaining?: ImportBatch[] }; status?: SyncState; message?: string; progress?: number; lastAttemptAt?: string; lastSuccessAt?: string; warnings?: string[] }
 let running = false;
 const guard = new AmazonAccountGuard(chrome.cookies);
 interface AccountCandidate { nonce: string; token: string; salt: string; fingerprint: string; expiresAt: number }
@@ -126,19 +127,42 @@ async function readPage<T>(tabId: number, request: Record<string, string>): Prom
   return result.data!;
 }
 
-async function ensureAlarms() {
-  await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
-  if (!(await chrome.alarms.get(DAILY_ALARM))) await chrome.alarms.create(DAILY_ALARM, { periodInMinutes: 24 * 60 });
-  const data = await state();
-  if (data.runId && data.status === 'syncing' && !(await chrome.alarms.get(RESUME_ALARM))) await chrome.alarms.create(RESUME_ALARM, { periodInMinutes: 1 });
+function nextAutomaticSyncAt(data: State): number {
+  // Existing installations already have lastSuccessAt. Attempts also count so
+  // errors and interrupted imports cannot repeatedly reopen the notebook.
+  const lastAttempt = Date.parse(data.lastAttemptAt ?? data.lastSuccessAt ?? '');
+  return Number.isFinite(lastAttempt) ? lastAttempt + SYNC_INTERVAL_MS : 0;
 }
 
-async function sync() {
+async function ensureAlarms() {
+  await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+  // Retire the old cookie-change and minute-by-minute retry triggers on upgrade.
+  await chrome.alarms.clear(RESUME_ALARM);
+  await chrome.alarms.clear(ACCOUNT_ALARM);
+  const data = await state();
+  if (!data.token) { await chrome.alarms.clear(DAILY_ALARM); return; }
+  const next = nextAutomaticSyncAt(data);
+  const alarm = await chrome.alarms.get(DAILY_ALARM);
+  if (!alarm || alarm.periodInMinutes !== 24 * 60 || (next > Date.now() && alarm.scheduledTime !== next)) {
+    await chrome.alarms.create(DAILY_ALARM, { when: Math.max(Date.now() + 60000, next || Date.now() + SYNC_INTERVAL_MS), periodInMinutes: 24 * 60 });
+  }
+}
+
+async function sync(manual = false) {
   if (running) return;
   running = true;
   const data = await state();
   try {
     if (!data.token) return;
+    if (!manual && Date.now() < nextAutomaticSyncAt(data)) {
+      await ensureAlarms();
+      return;
+    }
+    // Persist before any network request or notebook tab creation. Manual syncs
+    // are always available and push the next automatic attempt out by a day.
+    data.lastAttemptAt = new Date().toISOString();
+    await save(data);
+    await chrome.alarms.create(DAILY_ALARM, { when: nextAutomaticSyncAt(data), periodInMinutes: 24 * 60 });
     await upgrade(data);
     // Never reuse a rendered document left behind by an interrupted worker.
     await closeOwnedTab(data);
@@ -156,7 +180,6 @@ async function sync() {
       data.cursor = { phase: 'library', books: [], bookIndex: 0, token: '', contentLimitState: '', seenTokens: [] };
     }
     await report(data, 'syncing', 'Reading your Kindle notebook…');
-    await chrome.alarms.create(RESUME_ALARM, { periodInMinutes: 1 });
     while (data.cursor) {
       // The session remains fixed for the entire invocation, including A→B→A switches.
       await guard.unchanged(session);
@@ -184,7 +207,6 @@ async function sync() {
         delete data.cursor; delete data.runId; delete data.runAccountFingerprint;
         await closeOwnedTab(data);
         await report(data, 'success', ['Your Kindle highlights are up to date.', ...(data.warnings ?? [])].join(' '), 100);
-        await chrome.alarms.clear(RESUME_ALARM);
         break;
       }
       const tabId = await notebookTab(data);
@@ -225,10 +247,9 @@ async function sync() {
     const cursor = data.cursor;
     const stage = data.pending ? 'upload' : cursor?.phase === 'library' ? `library page ${cursor.seenTokens.length + 1}, ${cursor.books.length} books found` : cursor?.phase === 'annotations' ? `highlights for book ${cursor.bookIndex + 1} of ${cursor.books.length}` : 'connection';
     const message = error instanceof Error ? error.message : 'Sync interrupted. Try again to resume.';
-    // Explicit errors wait for a manual or next daily retry. Worker interruptions retain the resume alarm.
+    // Errors and worker interruptions retain their cursor for a manual or daily retry.
     await closeOwnedTab(data);
     await report(data, status, `[Extension ${chrome.runtime.getManifest().version}; ${stage}] ${message}`.slice(0, 1000)).catch(() => {});
-    await chrome.alarms.clear(RESUME_ALARM);
   } finally {
     running = false;
     // Publish the settled state so an open popup can enable its controls.
@@ -277,7 +298,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply) => {
         } finally { running = false; }
       } else if (request.action !== 'sync') throw new Error('Unknown extension action.');
       reply({ requestId: request.requestId, ok: true });
-      void sync();
+      void sync(true);
     } catch (error) { reply({ requestId: request.requestId, ok: false, error: error instanceof Error ? error.message : 'The request failed.' }); }
   })();
   return true;
@@ -286,11 +307,9 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply) => {
 chrome.cookies?.onChanged.addListener((change) => {
   if (guard.cookieChanged(change.cookie, change)) {
     void chrome.storage.session.remove('accountCandidate');
-    // A single delayed check avoids retrying on every cookie in a login sequence.
-    void chrome.alarms.create(ACCOUNT_ALARM, { delayInMinutes: 1 });
   }
 });
-chrome.alarms.onAlarm.addListener((alarm) => { if ([DAILY_ALARM, RESUME_ALARM, ACCOUNT_ALARM].includes(alarm.name)) void sync(); });
-chrome.runtime.onStartup.addListener(() => { void ensureAlarms().then(async () => { const data = await state(); if (data.token && (data.runId || !data.lastSuccessAt || Date.now() - Date.parse(data.lastSuccessAt) > 86400000)) await sync(); }); });
+chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === DAILY_ALARM) return sync(); });
+chrome.runtime.onStartup.addListener(() => ensureAlarms().then(() => sync()));
 chrome.runtime.onInstalled.addListener(() => { void ensureAlarms(); });
 void ensureAlarms();

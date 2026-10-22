@@ -31,6 +31,17 @@ function isPaginationOnly(document: Document, selector: string): boolean {
   return !text(remainder) && !remainder.querySelector('h1,h2,h3,h4,h5,h6,[data-asin],.kp-notebook-library-each-book,a,img,form,button,script,iframe');
 }
 
+function isEmptyAnnotationsPage(document: Document): boolean {
+  if (!document.querySelector('#empty-annotations-pane')) return false;
+  // Kindle returns this hidden pane even for books still listed in the library
+  // with zero highlights. Require its pagination control and no other content:
+  // an empty-state template alongside a changed annotation layout is not enough.
+  const remainder = document.cloneNode(true) as Document;
+  remainder.querySelector('#empty-annotations-pane')!.remove();
+  remainder.querySelectorAll('input.kp-notebook-content-limit-state').forEach((element) => element.remove());
+  return isPaginationOnly(remainder, '.kp-notebook-annotations-next-page-start');
+}
+
 export function assertNotebook(document: Document, url = 'https://read.amazon.com/notebook'): void {
   const parsed = new URL(url);
   if (parsed.origin !== 'https://read.amazon.com' || /\/ap\/(?:signin|cvf)|signin/i.test(parsed.pathname) || document.querySelector('#ap_email, #ap_password, form[name="signIn"]')) {
@@ -89,7 +100,7 @@ export function parseAnnotations(document: Document, bookId: string): Annotation
   const root = document.querySelector('#kp-notebook-annotations, #kp-notebook-annotations-container, #kp-notebook-highlights');
   const empty = document.querySelector('.kp-notebook-empty, #kp-notebook-empty') || /\bno (?:notes|highlights|annotations)\b/i.test(text(root));
   const noteOnly = root?.querySelector('#note, .kp-notebook-note');
-  if (!nodes.length && !empty && !noteOnly) {
+  if (!nodes.length && !empty && !noteOnly && !isEmptyAnnotationsPage(document)) {
     throw new KindleParseError('The Kindle annotation layout was not recognized. No saved highlights were removed.');
   }
   if (!nodes.length && noteOnly) warnings.push('This page has notes without highlighted passages; standalone notes were skipped.');
